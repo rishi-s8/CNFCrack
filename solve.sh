@@ -1,2 +1,2 @@
 #!/bin/sh
-./solve-cpp $*
+./solve $*
