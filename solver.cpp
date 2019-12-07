@@ -5,6 +5,9 @@
 #include <vector>
 #include <stack>
 #include <unordered_map>
+#include <queue>
+#include <math.h>
+#include <algorithm>
 
 inline int var(int lit)
 {
@@ -72,36 +75,30 @@ vector<int> Assignments;
 std::vector<std::vector<int> > clauses;
 Satisfiability SAT = "sat";
 Satisfiability UNSAT = "unsat";
-int decideVar;
+unordered_map<int,vector<int>> watchList;
+queue<int> falseAssignments;
+vector<pair<double,int>> variableOrdering;
 
-bool isConflict()
+void generateWatchList()
 {
-	for(auto clause: clauses)
+	for(int i=0; i<clauses.size(); ++i)
 	{
-		int nFalse = 0;
-		for(auto literal: clause)
-			if(Assignments[var(literal)]==-literal)
-				++nFalse;
-		if(nFalse == clause.size())
-		{
-			// cout << "Reached Conflict.." << endl;
-			// cout << vector<vector<int>>(1, clause) << endl;
-			return true;
-		}
+		auto &clause = clauses[i];
+		int maxRange = (clause.size() < 2) ? clause.size() : 2;
+		for(int j=0; j<maxRange; ++j)
+			watchList[clause[j]].push_back(i);
 	}
-	return false;
 }
 
 bool backtrack()
 {
-	// cout << "Backtracking.." << endl;
+	falseAssignments = queue<int>();
 	while(!trail.empty())
 	{
 		trailElement current = trail.top();
 		if(current.decision && !current.flipped)
 		{
-			// cout << "Flipping Decision to: " << -current.assignment << endl;
-			decideVar = var(current.assignment);
+			falseAssignments.push(current.assignment);
 			current.assignment = -current.assignment;
 			current.flipped = true;
 			Assignments[var(current.assignment)] = current.assignment;
@@ -111,40 +108,60 @@ bool backtrack()
 		}
 		else
 		{
-			// cout << "Unassigning: " << current.assignment << endl;
 			Assignments[var(current.assignment)] = 0;
 			trail.pop();
 		}
 	}
-	// cout << "Decisions could\'nt be flipped.. UNSAT" << endl;
 	return false;
 }
 
 bool BCP()
 {
-	for(int i=0; i<clauses.size(); ++i)
+	while(!falseAssignments.empty())
 	{
-		vector<int> &clause = clauses[i];
-		bool alreadyTrue = false;
-		int nFalse = 0, unassignedVar = 0;
-		for(auto literal: clause)
-			if(Assignments[var(literal)]==-literal) ++nFalse;
-			else if(!Assignments[var(literal)])
-				unassignedVar = literal;
-			else
-			{
-				alreadyTrue = true;
-				break;
-			}
-			
-		if(!alreadyTrue && clause.size()-nFalse==1)
+		int current = falseAssignments.front();
+		falseAssignments.pop();
+		for(int lookingIndex=0; lookingIndex<watchList[current].size(); ++lookingIndex)
 		{
-			// cout << "Propagating in clause: " << i << " var: " << unassignedVar << endl;
-			Assignments[var(unassignedVar)] = unassignedVar;
-			trail.push(trailElement(unassignedVar, false));
-			if(isConflict())
+			int clauseIndex = watchList[current][lookingIndex];
+			auto &clause = clauses[clauseIndex];
+			int watchable = 0;
+			int otherWatch = 0;
+			for(auto literal: clause)
+			{
+				if(literal != current)
+				{
+					if(!otherWatch)
+						for(auto z: watchList[literal])
+							if(z==clauseIndex) 
+							{
+								otherWatch = literal;
+								break;
+							}
+					if(otherWatch != literal && (!Assignments[var(literal)] || Assignments[var(literal)]==literal))
+						watchable = literal;
+					if(otherWatch && watchable)
+						break;
+				}
+			}
+			if(!otherWatch)
 				return false;
-			i=-1;
+			else if(Assignments[var(otherWatch)]==otherWatch)
+				continue;
+			else if(watchable)
+			{
+				watchList[current].erase(watchList[current].begin()+lookingIndex);
+				watchList[watchable].push_back(clauseIndex);
+				--lookingIndex;
+			}
+			else if(!Assignments[var(otherWatch)])
+			{
+				Assignments[var(otherWatch)] = otherWatch;
+				trail.push(trailElement(otherWatch, false));
+				falseAssignments.push(-otherWatch);
+			}
+			else
+				return false;
 		}
 	}
 	return true;
@@ -152,11 +169,13 @@ bool BCP()
 
 bool decide()
 {
-	while(decideVar<=nVars && Assignments[decideVar]) ++decideVar;
-	if(decideVar>nVars) return false;
-	// cout << "Deciding: " << -decideVar << endl;
-	trail.push(trailElement(-decideVar));
-	Assignments[decideVar] = -decideVar;
+
+	int decideVar = 0;
+	for(; decideVar<variableOrdering.size() && Assignments[var(variableOrdering[decideVar].second)]; ++decideVar);
+	if(decideVar>=variableOrdering.size()) return false;
+	trail.push(trailElement(variableOrdering[decideVar].second));
+	Assignments[var(variableOrdering[decideVar].second)] = variableOrdering[decideVar].second;
+	falseAssignments.push(-variableOrdering[decideVar].second);
 	return true;
 }
 
@@ -176,10 +195,9 @@ Satisfiability solve()
 int main(int argc, char* argv[]) {
 	ios_base::sync_with_stdio(false);
 	cin.tie(NULL);
-	decideVar = 1;
 	trail = stack<trailElement>();
+	falseAssignments = queue<int>();
 	Assignments.clear();
-
 	assert(argc == 2);
 	clauses = parse_dimacs(argv[1]);
 	nClauses=clauses.size();
@@ -191,16 +209,29 @@ int main(int argc, char* argv[]) {
 		}
 	}
 	Assignments.resize(nVars+1);
-	// cout << Assignments.size() << endl;
-	// for(auto z: Assignments)
-	// 	cout << z << " ";
-	// cout << endl;
-	// std::cout << clauses << std::endl;
+
+	variableOrdering.resize(nVars*2);
+	for(auto clause: clauses)
+	{
+		for(auto literal: clause)
+		{
+			if(literal<0)
+			{
+				variableOrdering[2*(-literal)-1].second = literal;
+				variableOrdering[2*(-literal)-1].first += pow(2, -(int)clause.size());
+			}
+		}
+	}
+	sort(variableOrdering.rbegin(), variableOrdering.rend());
+	for(int j=2*nVars-1; variableOrdering[j].second==0; --j) variableOrdering.pop_back();
+
+	generateWatchList();
+
 	if(solve()==SAT)
 	{
 		std::cout << SAT << std::endl;
 		for(int i=1; i<=nVars; ++i)
-			cout << Assignments[i] << " ";
+		 	cout << Assignments[i] << " ";
 		cout << endl;
 		return 10;
 	}
@@ -209,5 +240,4 @@ int main(int argc, char* argv[]) {
 		std::cout << UNSAT << std::endl;
 		return 20;
 	}
-	
 }
